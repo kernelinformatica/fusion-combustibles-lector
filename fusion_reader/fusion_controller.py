@@ -19,7 +19,7 @@ class FusionControllerError(Exception):
     pass
 
 
-class ConnectionError(FusionControllerError):
+class FusionConnectionError(FusionControllerError):
     """Raised when connection to the controller fails."""
     pass
 
@@ -42,19 +42,22 @@ class FusionController:
         connected (bool): Connection status
     """
     
-    def __init__(self, controller_ip: str, dll_path: str):
+    def __init__(self, controller_ip: str, dll_path: str, dll_namespace: str = "Wayne.Fusion"):
         """
         Initialize the FusionController.
         
         Args:
             controller_ip (str): IP address of the Fusion controller
             dll_path (str): Path to the Wayne DLL file
+            dll_namespace (str): Namespace and class name in the DLL (default: "Wayne.Fusion")
+                               Format should be "Namespace.ClassName" or just "ClassName"
             
         Raises:
             DLLLoadError: If the DLL cannot be loaded
         """
         self.controller_ip = controller_ip
         self.dll_path = dll_path
+        self.dll_namespace = dll_namespace
         self.connected = False
         self._fusion_instance = None
         
@@ -73,17 +76,46 @@ class FusionController:
             # Add reference to the Wayne DLL
             clr.AddReference(self.dll_path)
             
-            # Import the Wayne namespace
-            # Note: The actual namespace and class names should be adjusted based on 
-            # the actual Wayne DLL documentation
-            # Common patterns: Wayne.Fusion, WayneFusion, etc.
-            from Wayne import Fusion  # This is a placeholder - adjust based on actual DLL
+            # Import the class from the DLL using the configured namespace
+            # The namespace should be provided in the format "Namespace.ClassName" or "ClassName"
+            logger.info(f"Importing class from namespace: {self.dll_namespace}")
             
-            self._fusion_class = Fusion
-            logger.info("Wayne DLL loaded successfully")
+            # Split namespace to get the module and class
+            parts = self.dll_namespace.rsplit('.', 1)
+            if len(parts) == 2:
+                # Format: "Namespace.ClassName"
+                module_name, class_name = parts
+                # Dynamically import the module
+                import importlib
+                module = importlib.import_module(module_name)
+                self._fusion_class = getattr(module, class_name)
+            else:
+                # Format: "ClassName" - import from root
+                class_name = parts[0]
+                # Try to import directly
+                import sys
+                # The class should be available in sys.modules after AddReference
+                for mod_name, mod in sys.modules.items():
+                    if hasattr(mod, class_name):
+                        self._fusion_class = getattr(mod, class_name)
+                        break
+                else:
+                    raise ImportError(f"Could not find class '{class_name}' in loaded DLL")
+            
+            logger.info(f"Wayne DLL loaded successfully. Class: {self._fusion_class}")
             
         except Exception as e:
-            error_msg = f"Failed to load Wayne DLL: {str(e)}"
+            error_msg = (
+                f"Failed to load Wayne DLL: {str(e)}\n"
+                f"Please verify:\n"
+                f"  1. DLL path is correct: {self.dll_path}\n"
+                f"  2. DLL namespace is correct: {self.dll_namespace}\n"
+                f"  3. pythonnet is properly installed\n"
+                f"Common namespace formats:\n"
+                f"  - 'Wayne.Fusion' for Wayne.dll with Fusion class\n"
+                f"  - 'WayneFusion' for a class named WayneFusion\n"
+                f"  - 'FusionController' for a class named FusionController"
+            )
             logger.error(error_msg)
             raise DLLLoadError(error_msg) from e
     
@@ -95,7 +127,7 @@ class FusionController:
             bool: True if connection is successful, False otherwise
             
         Raises:
-            ConnectionError: If connection cannot be established
+            FusionConnectionError: If connection cannot be established
         """
         try:
             logger.info(f"Connecting to Fusion controller at {self.controller_ip}")
@@ -126,7 +158,7 @@ class FusionController:
         except Exception as e:
             error_msg = f"Connection error: {str(e)}"
             logger.error(error_msg)
-            raise ConnectionError(error_msg) from e
+            raise FusionConnectionError(error_msg) from e
     
     def disconnect(self):
         """Disconnect from the Fusion controller."""
@@ -165,11 +197,11 @@ class FusionController:
                 - timestamp: Transaction timestamp
                 
         Raises:
-            ConnectionError: If not connected to controller
+            FusionConnectionError: If not connected to controller
             FusionControllerError: If operation fails
         """
         if not self.connected:
-            raise ConnectionError("Not connected to controller. Call connect() first.")
+            raise FusionConnectionError("Not connected to controller. Call connect() first.")
         
         try:
             logger.info("Retrieving last sale from controller")
@@ -205,11 +237,11 @@ class FusionController:
             dict: Dictionary containing sale information, or None if no sale available
                 
         Raises:
-            ConnectionError: If not connected to controller
+            FusionConnectionError: If not connected to controller
             FusionControllerError: If operation fails
         """
         if not self.connected:
-            raise ConnectionError("Not connected to controller. Call connect() first.")
+            raise FusionConnectionError("Not connected to controller. Call connect() first.")
         
         try:
             logger.info("Retrieving last sale on Fusion from controller")

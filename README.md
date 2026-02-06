@@ -119,12 +119,15 @@ Clase principal para interactuar con controladores Wayne Fusion.
 #### Constructor
 
 ```python
-FusionController(controller_ip: str, dll_path: str)
+FusionController(controller_ip: str, dll_path: str, dll_namespace: str = "Wayne.Fusion")
 ```
 
 **Parámetros:**
 - `controller_ip` (str): Dirección IP del controlador Fusion
 - `dll_path` (str): Ruta al archivo DLL de Wayne
+- `dll_namespace` (str): Namespace y clase en la DLL (default: "Wayne.Fusion")
+  - Formato: "Namespace.ClassName" o simplemente "ClassName"
+  - Ejemplos: "Wayne.Fusion", "WayneFusion", "FusionController"
 
 **Raises:**
 - `DLLLoadError`: Si la DLL no puede ser cargada
@@ -137,7 +140,7 @@ Establece conexión con el controlador Fusion.
 
 **Returns:** `True` si la conexión es exitosa, `False` en caso contrario
 
-**Raises:** `ConnectionError` si no se puede establecer la conexión
+**Raises:** `FusionConnectionError` si no se puede establecer la conexión
 
 ##### `disconnect()`
 
@@ -150,7 +153,7 @@ Obtiene la última transacción de venta del controlador (página 22).
 **Returns:** Diccionario con información de la venta, o `None` si no hay ventas
 
 **Raises:** 
-- `ConnectionError`: Si no está conectado
+- `FusionConnectionError`: Si no está conectado
 - `FusionControllerError`: Si la operación falla
 
 ##### `get_last_sale_on_fusion() -> Optional[Dict[str, Any]]`
@@ -160,7 +163,7 @@ Obtiene la última transacción usando el método GetLastSaleOnFusion (página 2
 **Returns:** Diccionario con información de la venta, o `None` si no hay ventas
 
 **Raises:**
-- `ConnectionError`: Si no está conectado
+- `FusionConnectionError`: Si no está conectado
 - `FusionControllerError`: Si la operación falla
 
 ##### `poll_for_new_sales(callback, interval: int = 5, use_fusion_method: bool = False)`
@@ -194,14 +197,14 @@ El paquete define tres excepciones personalizadas:
 
 - `FusionControllerError`: Excepción base
 - `DLLLoadError`: Error al cargar la DLL
-- `ConnectionError`: Error de conexión con el controlador
+- `FusionConnectionError`: Error de conexión con el controlador
 
 Ejemplo de manejo de errores:
 
 ```python
 from fusion_reader import FusionController
 from fusion_reader.fusion_controller import (
-    ConnectionError, 
+    FusionConnectionError, 
     DLLLoadError, 
     FusionControllerError
 )
@@ -212,7 +215,7 @@ try:
     sale = controller.get_last_sale()
 except DLLLoadError as e:
     print(f"Error cargando DLL: {e}")
-except ConnectionError as e:
+except FusionConnectionError as e:
     print(f"Error de conexión: {e}")
 except FusionControllerError as e:
     print(f"Error del controlador: {e}")
@@ -239,6 +242,9 @@ Consulte `example_usage.py` para ver ejemplos completos de uso, incluyendo:
 1. **DLL de Wayne**: Este paquete requiere acceso a la DLL propietaria de Wayne. Asegúrese de tener los permisos y licencias necesarios.
 
 2. **Nombres de Clases y Métodos**: Los nombres exactos de clases, métodos y propiedades en la DLL pueden variar. Este código utiliza nombres comunes y patrones típicos. Ajuste según la documentación específica de su versión de la DLL de Wayne.
+   - Use el parámetro `dll_namespace` para especificar el namespace correcto de su DLL
+   - Ejemplo: `FusionController("192.168.1.100", "C:\\Path\\To\\DLL.dll", "MiNamespace.MiClase")`
+   - Si no conoce el namespace, puede usar herramientas como ILSpy o dnSpy para inspeccionar la DLL
 
 3. **Compatibilidad**: pythonnet funciona principalmente en Windows. Para otros sistemas operativos, puede ser necesario usar alternativas como Mono.
 

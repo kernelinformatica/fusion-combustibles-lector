@@ -129,7 +129,7 @@ def example_error_handling():
     print("\n--- Example 4: Error Handling ---")
     
     from fusion_reader.fusion_controller import (
-        ConnectionError,
+        FusionConnectionError,
         DLLLoadError,
         FusionControllerError
     )
@@ -145,7 +145,7 @@ def example_error_handling():
             sale = controller.get_last_sale()
             print(f"Sale retrieved: {sale}")
             
-        except ConnectionError as e:
+        except FusionConnectionError as e:
             print(f"Connection error: {e}")
             
         except FusionControllerError as e:
