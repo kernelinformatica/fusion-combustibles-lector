@@ -44,7 +44,7 @@ class FusionBridge:
         print("--- Fin de métodos ---\n")
 
     def obtener_venta(self, hose_id, sale_number=None):
-        self.imprimir_firma_getsale()
+        #self.imprimir_firma_getsale()
         sale_data = self.FusionSale()
         # Si se pasa sale_number, setearlo en el objeto sale_data antes de llamar a GetSale
         if sale_number is not None:
@@ -56,6 +56,7 @@ class FusionBridge:
                 venta = {
                     'venta_id': sale_data.GetSaleID(),
                     'surtidor_id': sale_data.GetPumpNr(),
+                    'pump_id': sale_data.GetPumpNr(),  # Agregado pump_id
                     'pico_id': sale_data.GetHoseNr(),
                     'producto_id': sale_data.GetGradeNr(),
                     'volumen': sale_data.GetVolume(),
@@ -72,7 +73,6 @@ class FusionBridge:
                     'turno_id': sale_data.GetShiftID(),
                     'producto': sale_data.GetGradeNr(),
                     'nombre_producto': self.leer_producto(sale_data.GetGradeNr()),
-                    # Puedes agregar más campos si lo necesitas
                 }
             except Exception as e:
                 venta = {'error': f'Error extrayendo datos de la venta: {e}'}
@@ -94,13 +94,48 @@ class FusionBridge:
         return hoses
 
     def obtener_ventas_del_dia(self, hose_id, fecha_dia):
+        print(":: Obteniendo ventas del día ", fecha_dia, ", aguarde un momento por favor...")
         if isinstance(fecha_dia, str):
             fecha_dia = datetime.strptime(fecha_dia, "%Y-%m-%d").date()
         ventas = []
-        hose_ids = [hose_id] if hose_id and int(hose_id) > 0 else self.obtener_picos()
-        for hid in hose_ids:
+        ventas_ids = set()  # Para evitar duplicados, solo por venta_id (SaleID)
+        hose_ids = []
+        try:
+            """
+            # esto no deveulve bien las coss lo comento temporalmente para seguir adelante, pero es importante entender la estructura real de la config y como acceder a bombas y picos reales
+            config = self.fusion.GetConfig()
+            n_bombas = getattr(config, 'm_iPumps', 0)
+            o_pump = getattr(config, 'o_Pump', None)
+            if o_pump is not None and n_bombas:
+                # Recorrer todas las bombas y sus picos reales
+                for idx in range(n_bombas):
+                    pump = o_pump[idx]
+                    pump_id = getattr(pump, 'm_iPumpNr', None)
+                    hoses = getattr(pump, 'o_Hose', None)
+                    n_hoses = getattr(pump, 'm_iHoses', 0)
+                    if hoses is not None and n_hoses:
+                        for hidx in range(n_hoses):
+                            hose = hoses[hidx]
+                            hose_id_real = getattr(hose, 'm_iHoseNr', None)
+                            if pump_id is not None and hose_id_real is not None:
+                                hose_ids.append((pump_id, hose_id_real))
+            else:
+                # Fallback si no se puede obtener la config real
+                hose_ids = [(None, i) for i in range(1, 22)]
+            """
+            hose_ids = [(None, i) for i in range(1, 22)]
+        except Exception as e:
+            print(f"Error obteniendo configuración de bombas y picos: {e}")
+            hose_ids = [(None, i) for i in range(1, 22)]
+
+        if hose_id and int(hose_id) > 0:
+            hose_ids = [hid for hid in hose_ids if hid[1] == int(hose_id)]
+        if not hose_ids:
+            hose_ids = [(None, int(hose_id))] if hose_id and int(hose_id) > 0 else [(None, i) for i in range(1, 22)]
+
+        for pump_id, pico_id in hose_ids:
             sale_data = self.FusionSale()
-            exito = self.fusion.GetSale(int(hid), sale_data)
+            exito = self.fusion.GetSale(int(pico_id), sale_data)
             if not exito:
                 continue
             try:
@@ -110,29 +145,46 @@ class FusionBridge:
             if not ultimo_sale_number:
                 continue
             for sale_number in range(int(ultimo_sale_number), 0, -1):
-                venta = self.obtener_venta(int(hid), int(sale_number))
+                venta = self.obtener_venta(int(pico_id), int(sale_number))
                 if venta:
-                    ventas.append({
-                        'venta_id': venta.get('venta_id'),
-                        'surtidor_id': venta.get('surtidor_id'),
-                        'pico_id': venta.get('pico_id'),
-                        'producto_id': venta.get('producto_id'),
-                        'volumen': venta.get('volumen'),
-                        'importe': venta.get('importe'),
-                        'precio_unitario': venta.get('precio_unitario'),
-                        'tipo_pago': venta.get('tipo_pago'),
-                        'fecha': venta.get('fecha'),
-                        'hora': venta.get('hora'),
-                        'volumen_inicial': venta.get('volumen_inicial'),
-                        'volumen_final': venta.get('volumen_final'),
-                        'nivel_precio': venta.get('nivel_precio'),
-                        'tipo_transaccion': venta.get('tipo_transaccion'),
-                        'importe_preset': venta.get('importe_preset'),
-                        'turno_id': venta.get('turno_id'),
-                        'producto': venta.get('producto'),
-                        'nombre_producto': venta.get('nombre_producto'),
-                    })
-        return ventas
+                    fecha_venta = venta.get('fecha')
+                    fecha_venta_dt = None
+                    if fecha_venta:
+                        if isinstance(fecha_venta, str) and len(fecha_venta) == 8 and fecha_venta.isdigit():
+                            try:
+                                fecha_venta_dt = datetime.strptime(fecha_venta, "%Y%m%d").date()
+                            except Exception:
+                                fecha_venta_dt = None
+                        else:
+                            try:
+                                fecha_venta_dt = datetime.strptime(str(fecha_venta), "%Y-%m-%d").date()
+                            except Exception:
+                                try:
+                                    fecha_venta_dt = datetime.strptime(str(fecha_venta)[:10], "%Y-%m-%d").date()
+                                except Exception:
+                                    fecha_venta_dt = None
+                        if fecha_venta_dt and fecha_venta_dt != fecha_dia:
+                            continue
+                    clave = venta.get('venta_id')
+                    if clave in ventas_ids:
+                        continue
+                    ventas_ids.add(clave)
+                    if pump_id is not None:
+                        venta['surtidor_id'] = pump_id
+                        venta['pump_id'] = pump_id
+                    if pico_id is not None:
+                        venta['pico_id'] = pico_id
+                    ventas.append(venta)
+
+        self.procesar_ventas_recibidas(ventas)
+
+
+    def procesar_ventas_recibidas(self, ventas):
+        print(f":: Procesando {len(ventas)} ventas recibidas, aguarde un momento por favor...")
+        for venta in ventas:
+            print(f"Venta ID: {venta.get('venta_id')}, Pico ID: {venta.get('pico_id')}, Fecha: {venta.get('fecha')}, Importe: {venta.get('importe')}")
+
+
 
     def imprimir_firma_getsale(self):
         print("\n--- Firma de Fusion.GetSale ---")
@@ -174,6 +226,37 @@ class FusionBridge:
             return venta
         except Exception as e:
             return {"error": f"Error obteniendo la última venta: {e}"}
+
+    def diagnostico_picos_bombas(self):
+        """
+        Diagnóstico: muestra cuántas bombas y picos detecta la DLL y sus IDs reales.
+        También imprime los atributos y el valor de config para analizar la estructura real.
+        """
+        try:
+            config = self.fusion.GetConfig()
+            print("Tipo de config:", type(config))
+            print("Atributos disponibles en config:", dir(config))
+            print("Valor de config:", config)
+            # Nuevo diagnóstico para m_iPumps y o_Pump
+            n_bombas = getattr(config, 'm_iPumps', None)
+            print(f"Cantidad de bombas (m_iPumps): {n_bombas}")
+            o_pump = getattr(config, 'o_Pump', None)
+            print(f"Tipo de o_Pump: {type(o_pump)}")
+            if o_pump is not None:
+                try:
+                    print(f"Longitud de o_Pump: {len(o_pump)}")
+                except Exception:
+                    print("o_Pump no es iterable o no tiene longitud.")
+                # Diagnóstico del primer elemento
+                try:
+                    primer_pump = o_pump[0]
+                    print("Atributos del primer elemento de o_Pump:", dir(primer_pump))
+                except Exception:
+                    print("No se pudo acceder al primer elemento de o_Pump.")
+            else:
+                print("o_Pump es None.")
+        except Exception as e:
+            print(f"Error en diagnóstico de picos y bombas: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="Bridge para FusionClass.dll - Consulta de surtidores")
@@ -262,6 +345,13 @@ def main():
                     print(f"Grado {grado}: {nombre}")
             else:
                 print("No se encontraron productos configurados.")
+            sys.exit(0)
+        if args.accion == 'diagnostico_picos_bombas':
+            if not args.ip:
+                print("Debe indicar --ip para conectar.")
+                sys.exit(1)
+            bridge.conectar(args.ip)
+            bridge.diagnostico_picos_bombas()
             sys.exit(0)
     except Exception as e:
         print(f"Error: {e}")
