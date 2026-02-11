@@ -1,9 +1,11 @@
 import os
 import sys
 import argparse
+
+import logging
+import pyodbc
 import time
 from datetime import datetime
-
 try:
     import clr  # pythonnet
 except ImportError:
@@ -11,8 +13,25 @@ except ImportError:
 
 class FusionBridge:
     def __init__(self, dll_path):
-        if not os.path.exists(dll_path):
-            raise FileNotFoundError(f"No se encuentra la DLL en {dll_path}")
+        # Forzar que el config.ini se busque en el mismo directorio que bridge.py
+        import configparser
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"No se encontró config.ini en {config_path}")
+        config = configparser.ConfigParser()
+        config.read(config_path)
+        # Leer datos de conexión Sybase
+        serv = config.get('CONEXION', 'serv', fallback=None)
+        usr = config.get('CONEXION', 'usr', fallback=None)
+        passwd = config.get('CONEXION', 'passwd', fallback=None)
+        db = config.get('CONEXION', 'db', fallback=None)
+        prt = config.get('CONEXION', 'prt', fallback=None)
+        if not all([serv, usr, passwd, db]):
+            raise Exception("Faltan datos de conexión en config.ini (serv, usr, passwd, db)")
+        # Construir cadena de conexión Sybase (ajusta según tu driver/DSN)
+        conn_str = f"DSN={serv};UID={usr};PWD={passwd};DATABASE={db}"
+        import pyodbc
+        self.conn = pyodbc.connect(conn_str)
         # Usar AddReference solo si está disponible
         if hasattr(clr, 'AddReference'):
             clr.AddReference(dll_path)
@@ -43,7 +62,7 @@ class FusionBridge:
                 print(method)
         print("--- Fin de métodos ---\n")
 
-    def obtener_venta(self, hose_id, sale_number=None):
+    def obtener_venta(self, hose_id, sale_number=None, ejecucion_id=None):
         #self.imprimir_firma_getsale()
         sale_data = self.FusionSale()
         # Si se pasa sale_number, setearlo en el objeto sale_data antes de llamar a GetSale
@@ -93,7 +112,7 @@ class FusionBridge:
             print(f"Error obteniendo hoses: {e}")
         return hoses
 
-    def obtener_ventas_del_dia(self, hose_id, fecha_dia):
+    def obtener_ventas_del_dia(self, hose_id, fecha_dia, ejecucion_id=None):
         print(":: Obteniendo ventas del día ", fecha_dia, ", aguarde un momento por favor...")
         if isinstance(fecha_dia, str):
             fecha_dia = datetime.strptime(fecha_dia, "%Y-%m-%d").date()
@@ -175,15 +194,116 @@ class FusionBridge:
                     if pico_id is not None:
                         venta['pico_id'] = pico_id
                     ventas.append(venta)
+        return ventas
+        #self.procesar_ventas_recibidas(ventas, ejecucion_id)
 
-        self.procesar_ventas_recibidas(ventas)
 
 
-    def procesar_ventas_recibidas(self, ventas):
-        print(f":: Procesando {len(ventas)} ventas recibidas, aguarde un momento por favor...")
+    def procesar_ventas_recibidas(self, ventas, ejecucion_id):
+
+        print(f":: Procesando ventas recibidas ({len(ventas)}), aguarde un momento por favor...")
+        cuantas = 0
+        if len(ventas) == 0:
+            self.grabarRepuesta(ejecucion_id, "No se encontraron ventas para el día indicado ")
+            print("No se encontraron ventas para el día indicado.")
+            return
         for venta in ventas:
-            print(f"Venta ID: {venta.get('venta_id')}, Pico ID: {venta.get('pico_id')}, Fecha: {venta.get('fecha')}, Importe: {venta.get('importe')}")
+            existe = self.verificarSiExisteVentaYaGrabada(venta.get('venta_id'), venta.get('surtidor_id'), venta.get('pico_id'), venta.get('fecha'))
 
+            if existe == 0 or existe is None:
+                cuantas = cuantas + 1
+                self.grabarRepuesta(ejecucion_id,  f"Venta ID: {venta.get('venta_id')}, Pico ID: {venta.get('pico_id')}, Fecha: {venta.get('fecha')}, Importe: {venta.get('importe')}")
+                print(
+                    f"Venta ID: {venta.get('venta_id')}, Pico ID: {venta.get('pico_id')}, Fecha: {venta.get('fecha')}, Importe: {venta.get('importe')}")
+                # Formatear fecha y hora correctamente
+                fecha = venta.get('fecha')
+                hora = venta.get('hora')
+                # Si la fecha viene como string tipo 'YYYYMMDD', convertir a 'YYYY-MM-DD'
+                if fecha and isinstance(fecha, str) and len(fecha) == 8 and fecha.isdigit():
+                    fecha = f"{fecha[:4]}-{fecha[4:6]}-{fecha[6:]}"
+                # Si la hora viene como string tipo 'HHMMSS', convertir a 'HH:MM:SS'
+                if hora and isinstance(hora, str) and len(hora) == 6 and hora.isdigit():
+                    hora = f"{hora[:2]}:{hora[2:4]}:{hora[4:]}"
+                insert_sql = """
+                    INSERT INTO fusion_comprobantes (
+                        venta_id, surtidor_id, pico_id, litros, importe, precio_unitario, tipo_pago,
+                        litros_inicial, litros_final, nivel_precio, tipo_transaccion, importe_preset,
+                        turno_id, producto_id, producto_nombre, fecha, hora
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                valores = (
+                    venta.get('venta_id'),
+                    venta.get('surtidor_id'),
+                    venta.get('pico_id'),
+                    venta.get('volumen'),
+                    venta.get('importe'),
+                    venta.get('precio_unitario'),
+                    venta.get('tipo_pago'),
+                    venta.get('volumen_inicial'),
+                    venta.get('volumen_final'),
+                    venta.get('nivel_precio'),
+                    venta.get('tipo_transaccion'),
+                    venta.get('importe_preset'),
+                    venta.get('turno_id'),
+                    venta.get('producto_id'),
+                    venta.get('nombre_producto'),
+                    fecha,
+                    hora
+                )
+                try:
+                    cursor = self.conn.cursor()
+                    cursor.execute(insert_sql, valores)
+                    self.conn.commit()
+
+
+
+                except Exception as e:
+
+                    self.grabarRepuesta(ejecucion_id, "Eror insertando venta en la base de datos: " + str(e))
+                    print(f"Error insertando venta en la base de datos: {e}")
+                    return ejecucion_id, "Eror insertando venta en la base de datos: " + str(e)
+
+
+        if cuantas == 0:
+            self.grabarRepuesta(ejecucion_id, "No se encontraron ventas nuevas para procesar en la fecha indicada "+str(fecha))
+            print("No se encontraron ventas nuevas para procesar.")
+        else:
+            self.grabarRepuesta(ejecucion_id, f"Total de ventas procesadas e insertadas: {str(cuantas)}, en la fecha indicada "+str(fecha))
+
+    def grabarRepuesta(self, ejecucion_id, mensaje):
+        if not hasattr(self, 'conn') or self.conn is None:
+            print("No hay conexión a la base de datos para grabar respuesta.")
+            return
+        delete_sql = "delete from fusion_respuestas_api where cod_ejecucion = ?"
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(delete_sql, (ejecucion_id,))
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error eliminando respuestas anteriores por codigo de ejecucion en la base de datos: {e}")
+
+        insert_sql = "INSERT INTO fusion_respuestas_api (cod_ejecucion, mensaje) VALUES (?, ?)"
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(insert_sql, (ejecucion_id, mensaje))
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error insertando respuesta en la base de datos: {e}")
+
+    def verificarSiExisteVentaYaGrabada(self, venta, surtidor, pico, fecha_str):
+        if not hasattr(self, 'conn') or self.conn is None:
+            raise Exception("No hay conexión a la base de datos Sybase. Revisa el config.ini y el log de inicialización.")
+        fecha = datetime.strptime(fecha_str, "%Y%m%d").strftime("%Y-%m-%d")
+        verificacion_sql = "SELECT COUNT(*) FROM fusion_comprobantes WHERE venta_id = ? AND surtidor_id = ? AND pico_id = ? AND fecha = ?"
+        cursor = self.conn.cursor()
+        cursor.execute(verificacion_sql, (venta, surtidor, pico, fecha))
+        count = cursor.fetchone()[0]
+        if count > 0:
+            # existe, no se hace nada
+            return 1
+        else:
+            # no existe se puede grabar
+            return 0
 
 
     def imprimir_firma_getsale(self):
@@ -267,6 +387,7 @@ def main():
     parser.add_argument('--accion', type=str, required=True, choices=['leer_producto', 'consultar_metodos', 'ultima_venta', 'venta_especifica', 'ventas_dia', 'listar_productos'], help='Acción a realizar')
     parser.add_argument('--grado', type=int, help='Número de grado/producto a consultar (1-8)')
     parser.add_argument('--fecha_dia', type=str, help='Fecha para filtrar ventas (YYYY-MM-DD)')
+    parser.add_argument('--ejecucion', type=str, help='Nùmero aleatorio para identificar la ejecución en logs')
     args = parser.parse_args()
 
     try:
@@ -296,7 +417,7 @@ def main():
             if args.hose_id is None:
                 print("Debe indicar --hose_id para consultar la última venta.")
                 sys.exit(1)
-            venta = bridge.obtener_venta(args.hose_id, 0)
+            venta = bridge.obtener_venta(args.hose_id, 0, args.ejecucion)
             if venta:
                 print("Datos de la última venta:")
                 for k, v in venta.items():
@@ -311,7 +432,7 @@ def main():
             if args.hose_id is None or args.sale_number is None:
                 print("Debe indicar --hose_id y --sale_number para consultar una venta específica.")
                 sys.exit(1)
-            venta = bridge.obtener_venta(args.hose_id, args.sale_number)
+            venta = bridge.obtener_venta(args.hose_id, args.sale_number, args.ejecucion)
             if venta:
                 print(f"Datos de la venta sale_number={args.sale_number}:")
                 for k, v in venta.items():
@@ -326,13 +447,17 @@ def main():
             if args.hose_id is None or not args.fecha_dia:
                 print("Debe indicar --hose_id y --fecha_dia para consultar ventas del día.")
                 sys.exit(1)
-            ventas = bridge.obtener_ventas_del_dia(args.hose_id, args.fecha_dia)
+            ventas = bridge.obtener_ventas_del_dia(args.hose_id, args.fecha_dia, args.ejecucion)
             if ventas:
-                print(f"Ventas del día {args.fecha_dia} para hose_id={args.hose_id}:")
-                for venta in ventas:
-                    print(venta)
+                #print(f"Ventas del día {args.fecha_dia} para hose_id={args.hose_id}:")
+                #for venta in ventas:
+                    #logging.info(venta)
+                bridge.procesar_ventas_recibidas(ventas, args.ejecucion)
+               #
+
             else:
-                print("No se encontraron ventas para ese día y pico.")
+               bridge.grabarRepuesta(args.ejecucion, "No se encontraron ventas para el día "+args.fecha_dia)
+               print("No se encontraron ventas para el dìa ."+args.fecha_dia)
         if args.accion == 'listar_productos':
             if not args.ip:
                 print("Debe indicar --ip para conectar.")
